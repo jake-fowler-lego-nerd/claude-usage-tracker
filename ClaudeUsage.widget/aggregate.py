@@ -13,8 +13,11 @@ LOG_PATH  = Path.home() / ".claude-usage" / "log.jsonl"
 CONF_PATH = Path.home() / ".claude-usage" / "config.json"
 
 DEFAULT_CONFIG = {
-    "monthly_budget_usd": None,
-    "daily_budget_usd":   None,
+    "monthly_budget_usd":  None,
+    "daily_budget_usd":    None,
+    "daily_token_limit":   None,
+    "weekly_token_limit":  None,
+    "monthly_token_limit": None,
 }
 
 
@@ -52,8 +55,15 @@ def main():
     days = [(now_utc - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(13, -1, -1)]
     daily_buckets = {d: empty_bucket() for d in days}
 
+    # Week: Mon–Sun containing today
+    week_start = now_utc - timedelta(days=now_utc.weekday())
+    week_dates  = set(
+        (week_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)
+    )
+
     today_bucket = empty_bucket()
     month_bucket = empty_bucket()
+    week_bucket  = empty_bucket()
 
     if LOG_PATH.exists():
         with open(LOG_PATH) as f:
@@ -74,6 +84,8 @@ def main():
                     add_record(today_bucket, rec)
                 if rec_month == month_str:
                     add_record(month_bucket, rec)
+                if rec_date in week_dates:
+                    add_record(week_bucket, rec)
                 if rec_date in daily_buckets:
                     add_record(daily_buckets[rec_date], rec)
 
@@ -82,12 +94,21 @@ def main():
         for d in days
     ]
 
+    def total_tokens(b):
+        return b["input_tokens"] + b["output_tokens"] \
+             + b["cache_creation_input_tokens"] + b["cache_read_input_tokens"]
+
     print(json.dumps({
-        "today":    {**today_bucket, "cost_usd": round(today_bucket["cost_usd"], 4)},
-        "month":    {**month_bucket, "cost_usd": round(month_bucket["cost_usd"], 4)},
+        "today":    {**today_bucket, "cost_usd": round(today_bucket["cost_usd"], 4),
+                     "total_tokens": total_tokens(today_bucket)},
+        "week":     {**week_bucket,  "cost_usd": round(week_bucket["cost_usd"], 4),
+                     "total_tokens": total_tokens(week_bucket)},
+        "month":    {**month_bucket, "cost_usd": round(month_bucket["cost_usd"], 4),
+                     "total_tokens": total_tokens(month_bucket)},
         "sparkline": sparkline,
         "config":   config,
         "generated": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "week_resets": (week_start + timedelta(days=7)).strftime("%Y-%m-%d"),
     }))
 
 
