@@ -2,7 +2,7 @@
 
 An [Übersicht](https://tracesof.net/uebersicht/) widget that tracks your [Claude Code](https://claude.ai/code) usage and displays token usage and cost across today, this week, and this month — with color-coded alerts as you approach your limits.
 
-![Widget showing Claude usage stats]
+![Widget showing Claude usage stats](screenshot.png)
 
 ## Requirements
 
