@@ -1,4 +1,4 @@
-export const command = "python3 ~/.claude-usage/aggregate.py";
+export const command = "sh ~/.claude-usage/run.sh";
 export const refreshFrequency = 60000;
 
 export const className = `
@@ -32,10 +32,10 @@ function fmtTokens(n) {
   return String(n);
 }
 
-function UsageBar({ label, sublabel, value, limit, formatValue }) {
-  const hasLimit = limit != null && limit > 0;
-  const pct      = hasLimit ? Math.min((value / limit) * 100, 100) : 0;
-  const color    = hasLimit ? barColor(pct) : "#fbbf24";
+function UsageBar({ label, sublabel, pct, mainLabel, subLabel2 }) {
+  const hasPct  = pct != null;
+  const color   = hasPct ? barColor(pct) : "#fbbf24";
+  const barFill = hasPct ? Math.min(pct, 100) : 0;
 
   return (
     <div style={{ marginBottom: 14 }}>
@@ -47,23 +47,20 @@ function UsageBar({ label, sublabel, value, limit, formatValue }) {
           )}
         </div>
         <div style={{ textAlign: "right" }}>
-          <span style={{ color: hasLimit ? color : "#e8e8e8", fontWeight: 700 }}>
-            {hasLimit ? Math.round(pct) + "%" : formatValue(value)}
+          <span style={{ color: hasPct ? color : "#e8e8e8", fontWeight: 700 }}>
+            {mainLabel}
           </span>
-          {hasLimit && (
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", marginTop: 1 }}>
-              {formatValue(value)} / {formatValue(limit)}
-            </div>
+          {subLabel2 && (
+            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", marginTop: 1 }}>{subLabel2}</div>
           )}
         </div>
       </div>
       <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, overflow: "hidden" }}>
         <div style={{
           height: "100%",
-          width: hasLimit ? pct + "%" : "100%",
-          background: color,
+          width: barFill + "%",
+          background: hasPct ? color : "rgba(255,255,255,0.2)",
           borderRadius: 2,
-          opacity: hasLimit ? 1 : 0.3,
         }} />
       </div>
     </div>
@@ -75,61 +72,76 @@ export const render = ({ output, error }) => {
   if (!output) return <div style={{ color: "rgba(255,255,255,0.4)" }}>loading…</div>;
 
   let data;
-  try {
-    data = JSON.parse(output);
-  } catch (e) {
-    return <div style={{ color: "#f87171" }}>parse error: {e.message}</div>;
-  }
-
+  try { data = JSON.parse(output); }
+  catch (e) { return <div style={{ color: "#f87171" }}>parse error: {e.message}</div>; }
   if (data.error) return <div style={{ color: "#f87171" }}>{data.error}</div>;
 
-  const { today, week, month, sparkline, config, week_resets } = data;
+  const { today, week, month, sparkline, config, anthropic } = data;
   const fmtCost = n => "$" + n.toFixed(2);
 
-  const weekResetsDate = new Date(week_resets);
-  const weekResetsLabel = "Resets " + weekResetsDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const fmtResets = iso => {
+    if (!iso) return null;
+    const diff = new Date(iso) - new Date();
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    if (h < 24) return "Resets in " + h + "h " + m + "m";
+    const d = new Date(iso);
+    return "Resets " + d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
 
-  const max = sparkline.reduce((m, d) => Math.max(m, d.cost_usd), 0.001);
+  // ── session bar ──────────────────────────────────────────────────────────
+  const session = anthropic && anthropic.five_hour;
+  const sessionPct = session ? session.utilization : null;
+
+  // ── weekly bar ───────────────────────────────────────────────────────────
+  const weekly    = anthropic && anthropic.seven_day;
+  const weeklyPct = weekly ? weekly.utilization : null;
+
+  // ── monthly bar ──────────────────────────────────────────────────────────
+  const monthBudget = config.monthly_budget_usd;
+  const monthPct    = monthBudget ? Math.min((month.cost_usd / monthBudget) * 100, 100) : null;
+
+  // ── sparkline ────────────────────────────────────────────────────────────
+  const max   = sparkline.reduce((m, d) => Math.max(m, d.cost_usd), 0.001);
   const BAR_W = 10, GAP = 2, H = 22;
-  const W = sparkline.length * (BAR_W + GAP) - GAP;
+  const W     = sparkline.length * (BAR_W + GAP) - GAP;
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#fbbf24" }}>◆ CLAUDE USAGE</span>
         <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)" }}>{today.sessions} sessions today</span>
       </div>
 
-      {/* Usage bars */}
       <UsageBar
-        label="Today"
-        sublabel={today.sessions + " sessions · " + fmtTokens(today.total_tokens) + " tokens"}
-        value={today.total_tokens}
-        limit={config.daily_token_limit}
-        formatValue={fmtTokens}
-      />
-      <UsageBar
-        label="This week"
-        sublabel={weekResetsLabel}
-        value={week.total_tokens}
-        limit={config.weekly_token_limit}
-        formatValue={fmtTokens}
-      />
-      <UsageBar
-        label="This month"
-        sublabel={month.sessions + " sessions · " + fmtCost(month.cost_usd)}
-        value={month.cost_usd}
-        limit={config.monthly_budget_usd}
-        formatValue={fmtCost}
+        label="Current session"
+        sublabel={session ? fmtResets(session.resets_at) : "install browser-cookie3 for live %"}
+        pct={sessionPct}
+        mainLabel={sessionPct != null ? Math.round(sessionPct) + "% used" : fmtTokens(today.total_tokens)}
+        subLabel2={sessionPct != null ? null : "today's tokens"}
       />
 
-      {/* Sparkline */}
+      <UsageBar
+        label="This week"
+        sublabel={weekly ? fmtResets(weekly.resets_at) : fmtTokens(week.total_tokens) + " tokens"}
+        pct={weeklyPct}
+        mainLabel={weeklyPct != null ? Math.round(weeklyPct) + "% used" : fmtCost(week.cost_usd)}
+        subLabel2={weeklyPct != null ? null : "this week"}
+      />
+
+      <UsageBar
+        label="This month"
+        sublabel={month.sessions + " sessions"}
+        pct={monthPct}
+        mainLabel={fmtCost(month.cost_usd)}
+        subLabel2={monthBudget ? Math.round(monthPct) + "% of " + fmtCost(monthBudget) : null}
+      />
+
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 10, marginTop: 2 }}>
         <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 9, marginBottom: 6, letterSpacing: "0.06em" }}>14-DAY HISTORY</div>
         <svg width={W} height={H} style={{ display: "block" }}>
           {sparkline.map((d, i) => {
-            const barH   = d.cost_usd > 0 ? Math.max((d.cost_usd / max) * H, 2) : 0;
+            const barH    = d.cost_usd > 0 ? Math.max((d.cost_usd / max) * H, 2) : 0;
             const isToday = i === sparkline.length - 1;
             return (
               <rect

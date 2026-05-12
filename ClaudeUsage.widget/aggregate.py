@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Reads ~/.claude-usage/log.jsonl and outputs aggregated usage JSON
-for the Übersicht widget.
+for the Übersicht widget. Also fetches live usage % from claude.ai
+via the browser session using osascript.
 """
 
 import json
-import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -28,6 +28,36 @@ def load_config():
         except Exception:
             pass
     return DEFAULT_CONFIG
+
+
+def fetch_anthropic_usage():
+    """Fetches live usage % from claude.ai using Chrome's stored session cookie."""
+    try:
+        import browser_cookie3
+        import urllib.request
+
+        UA = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+
+        cj = browser_cookie3.chrome(domain_name="claude.ai")
+
+        def get(url):
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+            with opener.open(req, timeout=8) as resp:
+                return json.loads(resp.read().decode())
+
+        orgs = get("https://claude.ai/api/organizations")
+        org = next(
+            (o for o in orgs if "claude_pro" in o.get("capabilities", [])),
+            orgs[0]
+        )
+        return get(f"https://claude.ai/api/organizations/{org['uuid']}/usage")
+    except Exception:
+        return None
 
 
 def empty_bucket():
@@ -55,8 +85,9 @@ def main():
     days = [(now_utc - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(13, -1, -1)]
     daily_buckets = {d: empty_bucket() for d in days}
 
-    # Week: Mon–Sun containing today
-    week_start = now_utc - timedelta(days=now_utc.weekday())
+    # Week: Thu–Wed containing today (matches Anthropic's reset cycle)
+    days_since_thu = (now_utc.weekday() - 3) % 7
+    week_start = now_utc - timedelta(days=days_since_thu)
     week_dates  = set(
         (week_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)
     )
@@ -77,8 +108,8 @@ def main():
                     continue
 
                 ts = rec.get("timestamp", "")
-                rec_date  = ts[:10]   # YYYY-MM-DD
-                rec_month = ts[:7]    # YYYY-MM
+                rec_date  = ts[:10]
+                rec_month = ts[:7]
 
                 if rec_date == today_str:
                     add_record(today_bucket, rec)
@@ -98,6 +129,8 @@ def main():
         return b["input_tokens"] + b["output_tokens"] \
              + b["cache_creation_input_tokens"] + b["cache_read_input_tokens"]
 
+    anthropic = fetch_anthropic_usage()
+
     print(json.dumps({
         "today":    {**today_bucket, "cost_usd": round(today_bucket["cost_usd"], 4),
                      "total_tokens": total_tokens(today_bucket)},
@@ -105,9 +138,10 @@ def main():
                      "total_tokens": total_tokens(week_bucket)},
         "month":    {**month_bucket, "cost_usd": round(month_bucket["cost_usd"], 4),
                      "total_tokens": total_tokens(month_bucket)},
-        "sparkline": sparkline,
-        "config":   config,
-        "generated": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sparkline":  sparkline,
+        "config":     config,
+        "anthropic":  anthropic,
+        "generated":  now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "week_resets": (week_start + timedelta(days=7)).strftime("%Y-%m-%d"),
     }))
 
